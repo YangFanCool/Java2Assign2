@@ -1,16 +1,18 @@
 package application.server;
 
+import javafx.application.Platform;
+
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.Scanner;
+import java.util.Timer;
+import java.util.TimerTask;
 
 public class GameThread extends Thread {
 
   private  final Object o = new Object();//这两个变量用来控制反转用户线程
-  private  int cnt;
-  private  boolean over;
   private  int id;
   private  ServerSocket serverSocket;
   private  Socket s1;// player1 socket
@@ -18,18 +20,19 @@ public class GameThread extends Thread {
   private  char[][] board;
   private  char winner;// 0表示平局，1，2分别表示玩家1，2获胜
 
+  private char currentPlayer;
+
+
   public GameThread(int id, ServerSocket serverSocket, Socket s1, Socket s2) {
     this.id = id;
     this.serverSocket = serverSocket;
     this.s1 = s1;
     this.s2 = s2;
-    this.cnt = 9;
-    this.over = false;
-    this.winner = 0;
+    this.winner = '*';
     this.board = new char[5][5];
     for (int i = 0; i <= 4; i++) {
       for (int j = 0; j <= 4; j++) {
-        board[i][j] = '*';
+        board[i][j] = '0';
       }
     }
     for (int i = 1; i <= 3; i++) {
@@ -37,16 +40,10 @@ public class GameThread extends Thread {
         board[i][j] = '0';
       }
     }
-    /*
-     【·】【·】【·】【·】【·】
-     【·】【1】【2】【3】【·】
-     【·】【1】【2】【3】【·】
-     【·】【1】【2】【3】【·】
-     【·】【·】【·】【·】【·】
-   */
   }
 
   public  char check() {
+    char res = '*';
     for (int i = 1; i <= 3; i++) {
       for (int j = 1; j <= 3; j++) {
         char cur = board[i][j];//cur 是当前正在判断的棋子
@@ -54,12 +51,13 @@ public class GameThread extends Thread {
         boolean b2 = (cur == board[i - 1][j]) && (cur == board[i + 1][j]);// ｜
         boolean b3 = (cur == board[i - 1][j + 1]) && (cur == board[i + 1][j - 1]);// /
         boolean b4 = (cur == board[i - 1][j - 1]) && (cur == board[i + 1][j + 1]);// \
-        if (b1 || b2 || b3 || b4) {
-          return cur;
+        if (b1 || b2 || b3 || b4 ) {
+          if (cur=='0')res='0';
+          else return cur;
         }
       }
     }
-    return '0';
+    return res;
   }
 
   public  void send(String msg) {
@@ -78,10 +76,10 @@ public class GameThread extends Thread {
     }
   }
 
-  public  char set(int x, int y, int who) {
+  public  char set(int x, int y, char who) {
     switch (who) {
-      case 1 : board[x][y] = '1';break;
-      case 2 : board[x][y] = '2';break;
+      case '1' : board[x][y] = '1';break;
+      case '2' : board[x][y] = '2';break;
     }
     return check();
   }
@@ -106,8 +104,19 @@ public class GameThread extends Thread {
     System.out.println(startMsg);
   }
 
-  public  String receiveRequest(Socket socket) throws IOException {
-    return new Scanner(socket.getInputStream()).nextLine();
+  public String receiveRequest(Socket socket) {
+    String line = null;
+    try {
+      Scanner sc = new Scanner(socket.getInputStream());
+      if (sc.hasNextLine()) {
+        line = sc.nextLine();
+      } else {
+        send("玩家离线");
+      }
+    } catch (IOException e) {
+      send("玩家离线");
+    }
+    return line;
   }
 
   @Override
@@ -120,125 +129,89 @@ public class GameThread extends Thread {
       // 0 end
 
       // 1 先通知两位玩家房间号
-      send(s1, startMsg + " You are player1");
-      send(s2, startMsg + " You are player2");
+      send(s1, startMsg + "<who:1>");
+      send(s2, startMsg + "<who:2>");
       // 1 end
 
       // 2 新建两个监听用户请求，并做出相应回应的线程，让两个线程交替运行
-      // 游戏最多9步
-      PlayerController1 p1 = new PlayerController1(s1);
-      PlayerController2 p2 = new PlayerController2(s2);
+      PlayerThread p1 = new PlayerThread('1',s1);
+      PlayerThread p2 = new PlayerThread('2',s2);
+      currentPlayer = '1';
+
       p1.start();
       p2.start();
-      // 2 end
+      send("NOW"+printBoard());
 
     } catch (Exception e) {
       throw new RuntimeException(e);
     }
   }
 
-  class PlayerController1 extends Thread {
+  class PlayerThread extends Thread{
+    char who;
+    Socket socket;
 
-    Socket s1;
-
-    public PlayerController1(Socket s1) {
-      this.s1 = s1;
+    public PlayerThread(char who,Socket s) {
+      this.who = who;
+      this.socket = s;
     }
 
     @Override
     public void run() {
-      try {
-        synchronized (o) {
-          while ((cnt > 0)&& !over) {
-            if (cnt % 2 == 0) {
-              o.wait();
-            } else {
-              // 1 给玩家发送指示信息
-              send(s1, "<Input>"+printBoard()+"<xy>");
-              // 2 <request> 玩家发来的坐标
-              String xy = receiveRequest(s1);
-              // 3 对棋盘进行操作，并判断胜负
-              int x = Integer.parseInt(String.valueOf(xy.charAt(0)));
-              int y = Integer.parseInt(String.valueOf(xy.charAt(1)));
-              winner = set(x, y, 1);
-              // 4 <response> 给玩家发送结果
-              if (winner == '0') {
-                String response = "<Succeed>"+printBoard()+"<waiting>";
-                send(s1, response);
-                cnt--;
-                o.notify();
-              } else {
-                over = true;
-                String response = String.format("<Game over>%s<winner player%s>",printBoard(),winner);
-                send(response);
-                cnt = 0;
+      try{
+        synchronized (o){
+          while (true){
+            //是当前玩家的回合
+            if (currentPlayer == who){
+
+              //向当前玩家发送提示信息，引导输入
+              send(socket,"<Info: Your turn, please input ...>");
+              //等待玩家的输入
+              String xy = receiveRequest(socket);
+
+              if (xy!=null){
+                int x = Integer.parseInt(String.valueOf(xy.charAt(0)));
+                int y = Integer.parseInt(String.valueOf(xy.charAt(1)));
+                //set棋盘，判断胜负
+                winner = set(x,y,this.who);
               }
-              // 5 server控制台输出此步骤的log信息
-              // <GameID><Order><Player><x,y><winner>
-              String log = String.format("<GameID: !%s!><Order: %s><Player: %s><x,y: %s><Winner: %s>",
-                  id, (9 - cnt), "1", xy, winner);
-              System.out.println(log);
-              // 6 检查游戏结束状态
-              if (over) over();
+              else winner='0';
+
+
+              //向两个人广播刚才操作的结果(1没有胜负继续、2游戏结束平局、3游戏结束有一方获胜)
+              if (winner=='0'){
+                send("NOW"+printBoard());
+                String broadcast = String.format("<Info: Player %s successfully set, game continue ...>",who);
+                send(broadcast);
+              }
+              else if (winner=='*'){
+                send("NOW"+printBoard());
+                String broadcast = "<Over@null@>";
+                send(broadcast);
+              }
+              else {
+                send("NOW"+printBoard());
+                String broadcast = String.format("<Over:@%s@>",winner);
+                send(broadcast);
+              }
+              //最后释放锁，让对手的处理线程拿到CPU资源
+              if (who =='1') currentPlayer ='2';
+              if (who =='2') currentPlayer ='1';
+              o.notify();
+            }
+            //不是当前玩家的回合
+            else {
+              //向这个线程对应的玩家发送提示信息，引导等待
+              send(socket,"<Info: Your opponent‘s turn, please wait ...>");
+              o.wait();
             }
           }
         }
-      } catch (Exception ex) {
-        ex.printStackTrace();
+      }
+      catch (Exception e){
+        e.printStackTrace();
       }
     }
-  }
 
-   class PlayerController2 extends Thread {
-
-    Socket s2;
-
-    public PlayerController2(Socket s2) {
-      this.s2 = s2;
-    }
-
-    @Override
-    public void run() {
-      try {
-        synchronized (o) {
-          while ((cnt > 0)&& !over) {
-            if (cnt % 2 == 1) {
-              o.wait();
-            } else {
-              // 1 给玩家发送指示信息
-              send(s2, "<Input>"+printBoard()+"<xy>");
-              // 2 <request> 玩家发来的坐标
-              String xy = receiveRequest(s2);
-              // 3 对棋盘进行操作，并判断胜负
-              int x = Integer.parseInt(String.valueOf(xy.charAt(0)));
-              int y = Integer.parseInt(String.valueOf(xy.charAt(1)));
-              winner = set(x, y, 2);
-              // 4 <response> 给玩家发送结果
-              if (winner == '0') {
-                String response = "<Succeed>"+printBoard()+"<waiting>";
-                send(s2, response);
-                cnt--;
-                o.notify();
-              } else {
-                over = true;
-                String response = String.format("<Game over><winner player%s>", winner);
-                send(response);
-                cnt = 0;
-                over();
-              }
-              // 5 server控制台输出此步骤的log信息
-              // <GameID><Order><Player><x,y><winner>
-              String log = String.format("<GameID: !%s!><Order: %s><Player: %s><x,y: %s><Winner: %s>",
-                  id, (9 - cnt), "2", xy, winner);
-              System.out.println(log);
-              // 6 检查游戏结束状态
-              if (over) over();
-            }
-          }
-        }
-      } catch (Exception ex) {
-        ex.printStackTrace();
-      }
-    }
   }
 }

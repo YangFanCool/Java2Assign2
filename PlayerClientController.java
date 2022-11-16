@@ -14,10 +14,7 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.net.Socket;
 import java.net.URL;
-import java.util.ResourceBundle;
-import java.util.Scanner;
-import java.util.Timer;
-import java.util.TimerTask;
+import java.util.*;
 
 public class PlayerClientController implements Initializable {
 
@@ -43,21 +40,25 @@ public class PlayerClientController implements Initializable {
 
     @Override
     public void initialize(URL location, ResourceBundle resources) {
-        Socket socket;
-
+        Socket socket = null;
         Scanner response;
         PrintWriter request;
+        try{
+            socket = new Socket("127.0.0.1", 7777);
+        }catch (Exception e){
+            System.out.println("连接服务器失败。。。");
+            System.exit(0);
+        }
         try {
             info.setText("hello");
-            socket = new Socket("127.0.0.1", 7777);
             response = new Scanner(socket.getInputStream());
             request = new PrintWriter(socket.getOutputStream());
-
+            //这里的作用是每间隔100ms刷新一下棋盘
             Timer timer = new Timer();
             timer.schedule(new TimerTask() {
                 public void run() {
                     Platform.runLater(() -> {
-                        refresh(board);  //更新ui代码
+                        refresh(board);
                     });
                 }
             }, 100, 100);
@@ -66,42 +67,73 @@ public class PlayerClientController implements Initializable {
                 while (response.hasNextLine()) {
                     String line = response.nextLine();
                     System.out.println(line);
-                    if (line.contains("You are player")) {
-                        who = line.charAt(line.length() - 1);
-                        id_area.setText("Player id: " + who);
-                        info_area="please wait for opponent player";
-                        info.setText(info_area);
-                        room_info.setText("Game id: " + line.split("!")[1]);
-                    } else if (line.contains("Input")) {
-                        info_area="its your turn, please choose";
-                        info.setText(info_area);
-                        //刷新棋盘状态
+                    //在这里解析server处理之后的信息
+                    if (line.contains("NOW")){
                         board = line.split("@")[1];
-                    } else if (line.contains("Succeed")) {
-                        info_area="succeed, please wait for opponent player";
-                        info.setText(info_area);
-                        //刷新棋盘状态
-                        board = line.split("@")[1];
-                    } else if (line.contains("Game over")) {
-                        char winner = line.charAt(line.length() - 2);
-                        board = line.split("@")[1];
-                        info_area="Game over, winner player is player" + winner;
-                        info.setText(info_area);
-                    } else if (line.contains("正在匹配玩家，请等待...")) {
-                        info_area="please wait for another play join the game";
-                        info.setText(info_area);
+                    }
+                    else {
+                        if (line.contains("who")) {
+                            who = line.charAt(line.length() - 2);
+                            id_area.setText("Player id: " + who);
+
+                            room_info.setText("Game id: " + line.split("!")[1]);
+
+
+                            setText("please wait for opponent player");
+                        }
+                        if (line.contains("input")){
+
+                            setText("its your turn, please choose");
+                        }
+                        else if (line.contains("continue")){
+                            setText(line);
+                        } else if (line.contains("Over")){
+                            String winner = line.split("@")[1];
+                            System.out.println(winner);
+                            if (Objects.equals(winner, "null")){
+
+                                setText("Game Over, No one win the game!");
+                            }else {
+                               setText("Game Over, Player "+ winner+ " win the game!");
+                            }
+                            try {
+                                Thread.sleep(8000);
+                            } catch (InterruptedException e) {
+                                throw new RuntimeException(e);
+                            }
+                            System.exit(0);
+                        }else if (line.contains("正在匹配玩家，请等待...")) {
+                            setText("please wait for another play join the game");
+
+                        } else if (line.contains("玩家离线")){
+                            setText("玩家离开...(3秒后自动关闭)");
+
+                            try {
+                                Thread.sleep(3000);
+                            } catch (InterruptedException e) {
+                                throw new RuntimeException(e);
+                            }
+                            System.exit(0);
+                        }
                     }
                 }
+
+                setText("服务器离线...(3秒后自动关闭)");
+                try {
+                    Thread.sleep(3000);
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+                System.exit(0);
             }).start();
-        } catch (IOException e) {
+
+        } catch (Exception e) {
             throw new RuntimeException(e);
         }
         game_panel.setOnMouseClicked(event -> {
-            if (info_area.equals("its your turn, please choose")){
+            if (info_area.equals("its your turn, please choose")) {
                 int x = (int) (event.getX() / BOUND);
                 int y = (int) (event.getY() / BOUND);
-                System.out.print("用户点击坐标");
-                System.out.println((y + 1) + "," + (x + 1));
                 //向服务器发送这一步点击的棋子
                 String s = String.valueOf(y + 1) + (x + 1);
                 request.println(s);
@@ -111,11 +143,16 @@ public class PlayerClientController implements Initializable {
                 else drawCircle(x, y);
             }
         });
-
-
     }
 
 
+    public void setText (String msg ) {
+       try{ info_area = msg;
+           info.setText(info_area);}
+       catch (NullPointerException e){
+           System.out.println("Exception");
+       }
+    }
     public void refresh(String board) {
         int cnt;
         for (int i = 0; i < 3; i++) {
@@ -132,6 +169,7 @@ public class PlayerClientController implements Initializable {
     }
 
     private void drawCircle(int i, int j) {
+
         Circle circle = new Circle();
         base_square.getChildren().add(circle);
         circle.setCenterX(i * BOUND + BOUND / 2.0 + OFFSET);
